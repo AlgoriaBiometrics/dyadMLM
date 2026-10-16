@@ -39,6 +39,15 @@
 #'   it when rows were excluded during fitting (e.g., for missing values).
 #'   Otherwise, a person whose partner's rows were excluded has an unknown
 #'   composition and is omitted.
+#' @param quartile_lines Quantile regression lines (`"qgam"`) can show trends
+#'   near the ends of a numeric axis more clearly than smoothed bins (`"bins"`,
+#'   default). As in DHARMa, they are fitted with the qgam package (Fasiolo et
+#'   al., 2021) and drawn on ranks of the axis values. Each dataset gets its
+#'   own lines.
+#'   Tuning qgam for every dataset would take far too long, so simulated
+#'   datasets reuse the tuning chosen for the observed data. The 95% coverage
+#'   of the qgam envelopes is therefore approximate. `"qgam"` is much slower
+#'   and may warn when fits do not converge.
 #'
 #' @return Invisibly returns a `dyadMLM_residual_check` list with the `pit` matrix
 #'   (after any centring) and calculated summaries in `compositions`. `pit` has
@@ -90,6 +99,10 @@
 #' *Journal of Computational and Graphical Statistics, 5*(3), 236--244.
 #' \doi{10.2307/1390802}
 #'
+#' Fasiolo, M., Wood, S. N., Zaffran, M., Nedellec, R., & Goude, Y. (2021).
+#' qgam: Bayesian nonparametric quantile regression modeling in R. *Journal of
+#' Statistical Software, 100*(9), 1--31. \doi{10.18637/jss.v100.i09}
+#'
 #' Hartig, F. (2026). *DHARMa: Residual diagnostics for hierarchical
 #' (multi-level/mixed) regression models* (Version 0.5.0) \[R package\].
 #' \doi{10.32614/CRAN.package.DHARMa}
@@ -139,9 +152,13 @@
 #' @export
 check_dyad_residuals <- function(simulations, dyad = NULL, role = NULL, member = NULL,
                                  predictors = NULL, seed = 123, plot = TRUE,
-                                 ask = NULL, panels = TRUE, data = NULL) {
+                                 ask = NULL, panels = TRUE, data = NULL,
+                                 quartile_lines = c("bins", "qgam")) {
   if (!inherits(simulations, "dyadMLM_response_simulations"))
     stop("`simulations` must be created by `simulate_dyad_responses()`.", call. = FALSE)
+  quartile_lines <- match.arg(quartile_lines)
+  if (quartile_lines == "qgam" && !requireNamespace("qgam", quietly = TRUE))
+    stop("`quartile_lines = \"qgam\"` needs the qgam package.", call. = FALSE)
   frame <- simulations$model_frame
   # A bare column name would otherwise fail with R's generic "object not found".
   predictors <- tryCatch(predictors, error = function(e) FALSE)
@@ -198,22 +215,41 @@ check_dyad_residuals <- function(simulations, dyad = NULL, role = NULL, member =
     })
     compositions[[i]]$patterns <- lapply(c(list(predicted), predictors), function(predictor) {
       lapply(role_rows, function(rows)
-        calculate_residual_pattern(pit, predictor, rows, role_rows))
+        calculate_residual_pattern(pit, predictor, rows, role_rows, quartile_lines))
     })
   }
   result <- list(pit = pit, compositions = compositions, predictors = names(predictors))
   attr(result, "dyadMLM") <- attr(simulations, "dyadMLM")
   class(result) <- c("dyadMLM_residual_check", "list")
   if (missing(role)) message_pooled_roles()
+  if (quartile_lines == "bins") suggest_qgam_lines(compositions)
   if (plot) graphics::plot(result, ask = ask, panels = panels)
   invisible(result)
+}
+
+# Points interactive users to qgam lines once per session. Only panels with
+# smoothed bins would change, so at least one is needed.
+suggest_qgam_lines <- function(compositions) {
+  # The hint would also be printed into rendered documents.
+  if (!rlang::is_interactive()) return(invisible())
+  # One TRUE or FALSE per panel: composition, then axis, then role.
+  smoothed <- unlist(lapply(compositions, function(composition)
+    lapply(composition$patterns, function(patterns_by_role)
+      lapply(patterns_by_role, `[[`, "smooth"))))
+  if (!any(smoothed)) return(invisible())
+  rlang::inform(c(
+    "PIT quartile lines use smoothed bins, which are fast for iterating on models.",
+    i = paste("For final candidate models, `quartile_lines = \"qgam\"` fits DHARMa-style",
+              "lines that can show trends near the ends of an axis more clearly. It takes",
+              "much longer, and its envelopes are approximate.")
+  ), .frequency = "once", .frequency_id = "dyadMLM_qgam_lines")
 }
 
 available_check_predictor <- function(x) {
   if (is.numeric(x)) is.finite(x) else !is.na(as.character(x))
 }
 
-calculate_residual_pattern <- function(pit, predictor, rows, role_rows) {
+calculate_residual_pattern <- function(pit, predictor, rows, role_rows, quartile_lines) {
   available <- available_check_predictor(predictor)
   composition_rows <- unlist(role_rows, use.names = FALSE)
   composition_rows <- composition_rows[available[composition_rows]]
@@ -254,6 +290,21 @@ calculate_residual_pattern <- function(pit, predictor, rows, role_rows) {
     values <- do.call(rbind, lapply(quartiles, function(group) group[i, ]))
     if (smooth) weights %*% values else values
   })
+  ranked <- smooth && quartile_lines == "qgam"
+  if (ranked) {
+    # As in DHARMa, fit and draw on ranks scaled to 0--1.
+    ranks <- rank(predictor[rows]) / length(rows)
+    grid <- seq(min(ranks), max(ranks), length.out = 101)
+    quartile_curves <- qgam_quartiles(pit[rows, , drop = FALSE], ranks, grid)
+    limits <- c(0, 1)
+    # Ticks at the predictor's quartiles, labelled with its values there. Two
+    # significant digits, or more where needed to tell different quartiles apart.
+    ticks <- 0:4 / 4
+    values <- stats::quantile(predictor[rows], ticks, names = FALSE)
+    digits <- 2
+    while (length(unique(signif(values, digits))) < length(unique(values))) digits <- digits + 1
+    labels <- signif(values, digits)
+  }
   # One envelope covers all three quartiles and positions in this panel.
   joint <- residual_curve_summary(do.call(rbind, quartile_curves))
   positions_per_curve <- nrow(quartile_curves[[1]])
@@ -261,9 +312,62 @@ calculate_residual_pattern <- function(pit, predictor, rows, role_rows) {
     indices <- seq_len(positions_per_curve) + (i - 1L) * positions_per_curve
     lapply(joint, `[`, indices)
   })
-  list(positions = if (smooth) grid else positions, labels = labels,
-       limits = limits + c(-padding, padding), binned = binned, smooth = smooth,
-       numeric = is.numeric(predictor), quantiles = quantiles)
+  pattern <- list(positions = if (smooth) grid else positions, labels = labels,
+                  limits = limits + c(-padding, padding), binned = binned, smooth = smooth,
+                  numeric = is.numeric(predictor), quantiles = quantiles)
+  if (ranked) pattern$ticks <- ticks
+  pattern
+}
+
+# Fit the three PIT quartiles across `axis` with qgam, as in
+# DHARMa::testQuantiles(). Returns one matrix per quartile, with `grid` points in
+# rows and datasets (columns of `pit`) in columns. Calibrating qgam for every
+# dataset would take far too long, so simulated datasets reuse the tuning found
+# for the observed data. The observed lines are then tuned differently from the
+# simulated ones, which makes the envelopes approximate (see the help).
+qgam_quartiles <- function(pit, axis, grid) {
+  # mgcv's default basis size, but no more than the distinct axis values.
+  basis_size <- min(length(unique(axis)), 10)
+  number_of_fits <- 3 * ncol(pit)
+  fit_warnings <- character()
+  # Progress bars would also be printed into rendered documents, so show one
+  # only in interactive sessions.
+  progress_bar <- if (rlang::is_interactive())
+    cli::cli_progress_bar("Fitting qgam quartile lines", total = number_of_fits)
+
+  fit_quartile <- function(residuals, quartile, ...) {
+    if (!is.null(progress_bar)) cli::cli_progress_update(id = progress_bar)
+    # Store mgcv's warnings for one summary below, instead of one per fit.
+    withCallingHandlers(
+      # capture.output() hides the calibration steps that qgam prints.
+      utils::capture.output(model <- qgam::qgam(res ~ s(pred, k = basis_size),
+        data = data.frame(res = residuals - quartile, pred = axis), qu = quartile, ...)),
+      warning = function(w) {
+        fit_warnings <<- c(fit_warnings, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      })
+    model
+  }
+
+  fitted_lines <- lapply(c(.25, .5, .75), function(quartile) {
+    observed_fit <- fit_quartile(pit[, 1], quartile)
+    vapply(seq_len(ncol(pit)), function(dataset) {
+      # Column 1 is the observed data. The others reuse its tuning.
+      fit <- if (dataset == 1L) observed_fit else fit_quartile(pit[, dataset], quartile,
+        lsig = observed_fit$calibr$lsig, err = observed_fit$calibr$err,
+        argGam = list(sp = observed_fit$sp))
+      # The fits use residuals minus the quartile, so add it back.
+      as.numeric(stats::predict(fit, data.frame(pred = grid))) + quartile
+    }, numeric(length(grid)))
+  })
+
+  if (length(fit_warnings)) {
+    warning_counts <- tibble::tibble(text = fit_warnings) |> dplyr::count(.data$text)
+    warning("qgam gave these warnings in one PIT quartile panel (", number_of_fits,
+            " fits):\n", paste0(warning_counts$n, " x ", warning_counts$text, collapse = "\n"),
+            call. = FALSE)
+  }
+  fitted_lines
 }
 
 #' @export
@@ -299,8 +403,13 @@ print.dyadMLM_residual_check <- function(x, ...) {
 #' Predicted outcomes and numeric predictors with more than eight distinct values
 #' are grouped into up to eight bins per role, with at least about 20
 #' observations per bin. With four or more bins, quartiles are smoothed across
-#' neighboring bins. These are full-model residuals, not partial effects. Bins
-#' and separate predictors can hide local patterns and interactions.
+#' neighboring bins. `quartile_lines = "qgam"` in [check_dyad_residuals()]
+#' replaces these smoothed quartiles with qgam lines on a ranked axis, with
+#' ticks at the quartiles of the axis values. Because simulated datasets
+#' reuse the qgam tuning of the observed data, the 95% coverage of these
+#' envelopes is approximate. These are full-model residuals, not partial
+#' effects. Bins and separate predictors can hide local patterns and
+#' interactions.
 #'
 #'
 #' @section Views and compositions:
@@ -375,10 +484,14 @@ plot.dyadMLM_residual_check <- function(x, ask = NULL, panels = TRUE, ...) {
     title <- if (is.null(name)) "PIT quartiles\n(fit across predicted outcomes)"
       else paste0("PIT quartiles by ", name, "\n(fit across predictor values)")
     if (is.null(pattern)) return(plot_check_empty(title, "No available predictor values"))
+    # qgam lines lie on ranks, with ticks at the predictor's quartiles.
+    ranked <- !is.null(pattern$ticks)
     graphics::plot(pattern$positions, rep(.5, length(pattern$positions)), type = "n", ylim = c(0, 1),
-      xlim = pattern$limits, xaxt = if (pattern$binned) "s" else "n", yaxt = "n", main = title,
-      xlab = if (is.null(name)) "Predicted outcome" else name, ylab = "PIT quartiles")
+      xlim = pattern$limits, xaxt = if (pattern$binned && !ranked) "s" else "n", yaxt = "n",
+      main = title, ylab = "PIT quartiles",
+      xlab = paste0(if (is.null(name)) "Predicted outcome" else name, if (ranked) " (ranked)"))
     if (!pattern$binned) graphics::axis(1, pattern$positions, pattern$labels, cex.axis = .8)
+    if (ranked) graphics::axis(1, pattern$ticks, pattern$labels)
     graphics::axis(2, c(0, .25, .5, .75, 1))
     graphics::abline(h = c(.25, .5, .75), lty = 2, col = check_colours$reference)
     draw_quartiles(pattern$positions, pattern$quantiles, pattern$smooth,

@@ -189,6 +189,62 @@ test_that("numeric predictors use each role's bins, smoothed when there are enou
   expect_equal(lengths(lapply(patterns, `[[`, "positions")), c(A = 1L, B = 1L))
 })
 
+test_that("qgam lines replace smoothed bins and are fitted on ranks", {
+  skip_if_not_installed("qgam")
+  # A skewed predictor and an observed PIT that rises with it.
+  n <- 100
+  predictor <- exp(seq(0, 5, length.out = n))
+  pit <- cbind(seq(.1, .9, length.out = n) + .1 * sin(seq_len(n)),
+               matrix(sin(seq_len(2 * n))^2, n))
+  pattern <- calculate_residual_pattern(pit, predictor, seq_len(n), list(seq_len(n)), "qgam")
+  # Lines lie on ranks from 0 to 1, with ticks at the predictor's quartiles.
+  expect_equal(range(pattern$positions), c(1 / n, 1))
+  expect_equal(pattern$ticks, 0:4 / 4)
+  expect_equal(pattern$labels, signif(quantile(predictor, 0:4 / 4, names = FALSE), 2))
+  # Close quartiles keep distinct labels.
+  narrow <- calculate_residual_pattern(pit, seq(1000, 1001, length.out = n), seq_len(n),
+                                       list(seq_len(n)), "qgam")
+  expect_length(unique(narrow$labels), 5)
+  expect_lt(pattern$quantiles[[2]]$observed[1], .3)
+  expect_gt(pattern$quantiles[[2]]$observed[101], .7)
+  # Without enough observations for smoothing, bins stay.
+  expect_identical(calculate_residual_pattern(pit, predictor, 1:60, list(1:60), "qgam"),
+                   calculate_residual_pattern(pit, predictor, 1:60, list(1:60), "bins"))
+  # A saved check with qgam lines draws its ranked axis.
+  result <- check_dyad_residuals(distribution_check_fixture(), role = NULL, plot = FALSE)
+  result$compositions[[1]]$patterns[[1]]$Pooled <- pattern
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  expect_no_error(plot(result, ask = FALSE))
+})
+
+test_that("qgam warnings come as one summary per panel", {
+  skip_if_not_installed("qgam")
+  # Let every fit warn, as mgcv does after a step failure.
+  real_qgam <- qgam::qgam
+  local_mocked_bindings(qgam = function(...) {
+    warning("Fitting terminated with step failure")
+    real_qgam(...)
+  }, .package = "qgam")
+  n <- 100
+  pit <- matrix(sin(seq_len(3 * n))^2, n)
+  # Three quartiles for three datasets give nine fits.
+  expect_warning(
+    calculate_residual_pattern(pit, seq_len(n), seq_len(n), list(seq_len(n)), "qgam"),
+    "panel \\(9 fits\\):\n9 x Fitting terminated with step failure")
+})
+
+test_that("interactive checks suggest qgam lines only when bins are smoothed", {
+  withr::local_options(rlang_interactive = TRUE, rlib_message_verbosity = "verbose")
+  # 120 observations give six bins of predicted outcomes, which are smoothed.
+  simulations <- subset_fixture(distribution_check_fixture(), rep(1:12, 10))
+  expect_message(check_dyad_residuals(simulations, role = NULL, plot = FALSE),
+                 "quartile_lines = \"qgam\"")
+  # 12 observations give too few bins for smoothing.
+  expect_no_message(check_dyad_residuals(distribution_check_fixture(), role = NULL,
+                                         plot = FALSE))
+})
+
 
 test_that("lone responses keep their composition, and empty roles still plot", {
   grDevices::pdf(NULL, width = 12, height = 10)
