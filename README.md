@@ -63,13 +63,14 @@ validates dyadic data and creates model-ready columns for:
 - ✅ **Dyadic Score Model (DSM):** distinguishable dyads
   ([vignette](https://pascal-kueng.github.io/dyadMLM/articles/dsm.html)).
 
-It supports cross-sectional and intensive longitudinal dyadic data
-(e.g., daily diary data). The package also supports datasets containing
-multiple dyad compositions.
+All models support cross-sectional and intensive longitudinal dyadic
+data (e.g., daily diary data). The package also supports datasets
+containing multiple dyad compositions.
 
-Preparation options include selecting and pooling compositions, treating
-selected compositions as exchangeable, centering predictors, and
-creating within-/between-person components and lagged predictors.
+Preparation options include selecting and pooling compositions, and
+treating selected compositions as exchangeable. APIM/DIM/DSM predictors
+can be centered, decomposed into within-/between-person components, and
+lagged.
 
 Prepared data can be used with **glmmTMB**, **brms**, and other
 multilevel modeling packages that support the required model structure.
@@ -83,7 +84,7 @@ for data requirements and examples of data preparation workflows.
 |----|----|----|
 | [Compare nested models](https://pascal-kueng.github.io/dyadMLM/reference/compare_nested_models.html) | ✅ Supported | Not implemented · [Contribute](https://github.com/Pascal-Kueng/dyadMLM/blob/main/.github/CONTRIBUTING.md) |
 | [Recover exchangeable member variances and partner covariances](https://pascal-kueng.github.io/dyadMLM/reference/recover_exchangeable_covariance.html) | ✅ Point estimates | ✅ Posterior summaries and draws |
-| [Check partner dependence — cross-sectional](https://pascal-kueng.github.io/dyadMLM/reference/check_partner_dependence.html)<sup>1</sup> | ✅ Experimental | Not implemented · [Contribute](https://github.com/Pascal-Kueng/dyadMLM/blob/main/.github/CONTRIBUTING.md) |
+| [Check partner dependence](https://pascal-kueng.github.io/dyadMLM/reference/check_partner_dependence.html)<sup>1</sup> | ✅ Experimental | Not implemented · [Contribute](https://github.com/Pascal-Kueng/dyadMLM/blob/main/.github/CONTRIBUTING.md) |
 | [Check residuals](https://pascal-kueng.github.io/dyadMLM/reference/check_dyad_residuals.html)<sup>1</sup> | ✅ Experimental | Not implemented · [Contribute](https://github.com/Pascal-Kueng/dyadMLM/blob/main/.github/CONTRIBUTING.md) |
 | [Check outcomes](https://pascal-kueng.github.io/dyadMLM/reference/check_dyad_outcomes.html)<sup>1</sup> | ✅ Experimental | Not implemented · [Contribute](https://github.com/Pascal-Kueng/dyadMLM/blob/main/.github/CONTRIBUTING.md) |
 
@@ -281,9 +282,13 @@ model
 comparisons](https://pascal-kueng.github.io/dyadMLM/reference/compare_nested_models.html)
 can help assess those restrictions).
 
+For intensive longitudinal data, also supply `member` and `time`. The
+check then compares member means and same-occasion deviations from them
+separately.
+
 The same `simulations` can be reused with `check_dyad_residuals()` and
-`check_dyad_outcomes()`. Use the same `dyad`, `role`, and `data`
-arguments. The [APIM
+`check_dyad_outcomes()`. Use the same `dyad`, `role`, `member`, and
+`data` arguments. The [APIM
 vignette](https://pascal-kueng.github.io/dyadMLM/articles/apim.html#checking-residuals-and-outcomes)
 shows a worked example.
 
